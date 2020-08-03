@@ -19,6 +19,9 @@ from val import evaluate
 cv2.setNumThreads(0)
 cv2.ocl.setUseOpenCL(False)  # To prevent freeze of DataLoader
 
+import visdom
+
+vis = visdom.Visdom()
 
 def train(prepared_train_labels, train_images_folder, num_refinement_stages, base_lr, batch_size, batches_per_iter,
           num_workers, checkpoint_path, weights_only, from_mobilenet, checkpoints_folder, log_after,
@@ -81,6 +84,19 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
             if batch_per_iter_idx == 0:
                 optimizer.zero_grad()
 
+            # print("show imgs"
+            #       , batch_data['keypoint_maps'].shape, batch_data['paf_maps'].shape
+            #       , batch_data['keypoint_mask'].shape, batch_data['paf_mask'].shape
+            #       , batch_data['mask'].shape, batch_data['image'].shape
+            #       )
+            # print("seg", batch_data['label']['segmentations'])
+            vis.images(batch_data['image'][:, [2, 1, 0], ...] + 0.5, 4, 2, "1", opts=dict(title="img"))
+            vis.images(batch_data['keypoint_mask'].permute(1, 0, 2, 3), 4, 2, "2", opts=dict(title="kp_mask"))
+            vis.images(batch_data['paf_mask'].permute(1, 0, 2, 3), 4, 2, "3", opts=dict(title="paf_mask"))
+            vis.images(batch_data['keypoint_maps'].permute(1, 0, 2, 3), 4, 2, "4", opts=dict(title="keypoint_maps"))
+            vis.images(batch_data['paf_maps'].permute(1, 0, 2, 3), 4, 2, "5", opts=dict(title="paf_maps"))
+            vis.images(batch_data['mask'].unsqueeze(0), 4, 2, "6", opts=dict(title="MASK"))
+
             images = batch_data['image'].cuda()
             keypoint_masks = batch_data['keypoint_mask'].cuda()
             paf_masks = batch_data['paf_mask'].cuda()
@@ -140,7 +156,7 @@ if __name__ == '__main__':
     parser.add_argument('--base-lr', type=float, default=4e-5, help='initial learning rate')
     parser.add_argument('--batch-size', type=int, default=32, help='batch size')
     parser.add_argument('--batches-per-iter', type=int, default=1, help='number of batches to accumulate gradient from')
-    parser.add_argument('--num-workers', type=int, default=8, help='number of workers')
+    parser.add_argument('--num-workers', type=int, default=1, help='number of workers')
     parser.add_argument('--checkpoint-path', type=str, required=True, help='path to the checkpoint to continue training from')
     parser.add_argument('--from-mobilenet', action='store_true',
                         help='load weights from mobilenet feature extractor')

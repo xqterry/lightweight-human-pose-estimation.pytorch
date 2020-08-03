@@ -12,6 +12,13 @@ class Pose:
                  'r_hip', 'r_knee', 'r_ank', 'l_hip', 'l_knee', 'l_ank',
                  'r_eye', 'l_eye',
                  'r_ear', 'l_ear']
+
+    hr_kpt_names = ['nose', 'neck',
+                 'R_sho', 'R_elb', 'R_wri', 'L_sho', 'L_elb', 'L_wri',
+                 'R_hip', 'R_knee', 'R_ank', 'L_hip', 'L_knee', 'L_ank',
+                 'R_eye', 'L_eye',
+                 'R_ear', 'L_ear']
+    
     sigmas = np.array([.26, .79, .79, .72, .62, .79, .72, .62, 1.07, .87, .89, 1.07, .87, .89, .25, .25, .35, .35],
                       dtype=np.float32) / 10.0
     vars = (sigmas * 2) ** 2
@@ -44,9 +51,10 @@ class Pose:
             self.id = Pose.last_id + 1
             Pose.last_id += 1
 
-    def draw(self, img):
+    def draw(self, img, show_names=False):
         assert self.keypoints.shape == (Pose.num_kpts, 2)
 
+        kpts = dict()
         for part_id in range(len(BODY_PARTS_PAF_IDS) - 2):
             kpt_a_id = BODY_PARTS_KPT_IDS[part_id][0]
             global_kpt_a_id = self.keypoints[kpt_a_id, 0]
@@ -60,6 +68,26 @@ class Pose:
                 cv2.circle(img, (int(x_b), int(y_b)), 3, Pose.color, -1)
             if global_kpt_a_id != -1 and global_kpt_b_id != -1:
                 cv2.line(img, (int(x_a), int(y_a)), (int(x_b), int(y_b)), Pose.color, 2)
+
+                if show_names:
+                    kpts[Pose.hr_kpt_names[kpt_a_id]] = [x_a, y_a]
+                    kpts[Pose.hr_kpt_names[kpt_b_id]] = [x_b, y_b]
+
+        px = img.shape[1] - 200
+        py = 20
+
+        for k, v in kpts.items():
+            # draw part coordination as text
+            t = f"{k}: {v[0]}, {v[1]}"
+            cv2.putText(img, t,
+                        (px, py),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        (255, 255, 255)
+                        )
+            # print("put text ", t, " at ", px, py)
+            py += 20
+
 
 
 def get_similarity(a, b, threshold=0.5):

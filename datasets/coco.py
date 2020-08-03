@@ -176,3 +176,17 @@ class CocoValDataset(Dataset):
 
     def __len__(self):
         return len(self._labels['images'])
+
+if __name__ == '__main__':
+    print("test coco")
+
+    dataset = CocoTrainDataset(prepared_train_labels,
+                                "/media/terry/_dataset/coco/train2017",
+                               stride, sigma, path_thickness,
+                               transform=transforms.Compose([
+                                   ConvertKeypoints(),
+                                   Scale(),
+                                   Rotate(pad=(128, 128, 128)),
+                                   CropPad(pad=(128, 128, 128)),
+                                   Flip()]))
+    train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)

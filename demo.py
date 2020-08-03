@@ -4,11 +4,34 @@ import cv2
 import numpy as np
 import torch
 
+import math
+
 from models.with_mobilenet import PoseEstimationWithMobileNet
 from modules.keypoints import extract_keypoints, group_keypoints
 from modules.load_state import load_state
 from modules.pose import Pose, track_poses
-from val import normalize, pad_width
+# from val import normalize, pad_width
+
+def normalize(img, img_mean, img_scale):
+    img = np.array(img, dtype=np.float32)
+    img = (img - img_mean) * img_scale
+    return img
+
+
+def pad_width(img, stride, pad_value, min_dims):
+    h, w, _ = img.shape
+    h = min(min_dims[0], h)
+    min_dims[0] = math.ceil(min_dims[0] / float(stride)) * stride
+    min_dims[1] = max(min_dims[1], w)
+    min_dims[1] = math.ceil(min_dims[1] / float(stride)) * stride
+    pad = []
+    pad.append(int(math.floor((min_dims[0] - h) / 2.0)))
+    pad.append(int(math.floor((min_dims[1] - w) / 2.0)))
+    pad.append(int(min_dims[0] - h - pad[0]))
+    pad.append(int(min_dims[1] - w - pad[1]))
+    padded_img = cv2.copyMakeBorder(img, pad[0], pad[2], pad[1], pad[3],
+                                    cv2.BORDER_CONSTANT, value=pad_value)
+    return padded_img, pad
 
 
 class ImageReader(object):
@@ -68,8 +91,10 @@ def infer_fast(net, img, net_input_height_size, stride, upsample_ratio, cpu,
     stages_output = net(tensor_img)
 
     stage2_heatmaps = stages_output[-2]
+    print("HEATMAP shape", stage2_heatmaps.shape)
     heatmaps = np.transpose(stage2_heatmaps.squeeze().cpu().data.numpy(), (1, 2, 0))
     heatmaps = cv2.resize(heatmaps, (0, 0), fx=upsample_ratio, fy=upsample_ratio, interpolation=cv2.INTER_CUBIC)
+
 
     stage2_pafs = stages_output[-1]
     pafs = np.transpose(stage2_pafs.squeeze().cpu().data.numpy(), (1, 2, 0))
@@ -116,9 +141,12 @@ def run_demo(net, image_provider, height_size, cpu, track, smooth):
         if track:
             track_poses(previous_poses, current_poses, smooth=smooth)
             previous_poses = current_poses
+
+        print("draw", img.dtype, img.shape, img.min(), img.max())
         for pose in current_poses:
             pose.draw(img)
         img = cv2.addWeighted(orig_img, 0.6, img, 0.4, 0)
+        print(img.min(), img.max())
         for pose in current_poses:
             cv2.rectangle(img, (pose.bbox[0], pose.bbox[1]),
                           (pose.bbox[0] + pose.bbox[2], pose.bbox[1] + pose.bbox[3]), (0, 255, 0))
@@ -163,4 +191,5 @@ if __name__ == '__main__':
     else:
         args.track = 0
 
+    print(args)
     run_demo(net, frame_provider, args.height_size, args.cpu, args.track, args.smooth)
