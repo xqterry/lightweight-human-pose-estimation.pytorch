@@ -34,10 +34,10 @@ def pad_width(img, stride, min_dims):
     min_dims[1] = max(min_dims[1], w)
     min_dims[1] = math.ceil(min_dims[1] / float(stride)) * stride
     pad = []
-    pad.append(int(math.floor((min_dims[0] - h) / 2.0)))
     pad.append(int(math.floor((min_dims[1] - w) / 2.0)))
-    pad.append(int(min_dims[0] - h - pad[0]))
-    pad.append(int(min_dims[1] - w - pad[1]))
+    pad.append(int(min_dims[1] - w - pad[0]))
+    pad.append(int(math.floor((min_dims[0] - h) / 2.0)))
+    pad.append(int(min_dims[0] - h - pad[2]))
     # padded_img = cv2.copyMakeBorder(img, pad[0], pad[2], pad[1], pad[3],
     #                                 cv2.BORDER_CONSTANT, value=pad_value)
 
@@ -158,8 +158,8 @@ def anime_frame(rgb, env, size=None, useSigmod=False, useTwice=False):
     img /= 255
 
     img = img.permute(2, 0, 1).unsqueeze(0).cuda()
-    # output = rgb * 0.6 + img * 0.4
-    output = img
+    output = rgb * 0.6 + img * 0.4
+    # output = img
 
     return output, env
 
@@ -189,8 +189,8 @@ if __name__ == '__main__':
 
     import cv2
 
-    # frame_provider = VideoReader("../AlphaPose/dance3.mp4")
-    frame_provider = VideoReader("../AlphaPose/dance2.mp4")
+    frame_provider = VideoReader("../AlphaPose/dance3.mp4")
+    # frame_provider = VideoReader("../AlphaPose/dance2.mp4")
 
     env = None
     _, env = anime_frame(None, env)

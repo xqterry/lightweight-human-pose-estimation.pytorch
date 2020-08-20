@@ -115,6 +115,7 @@ class CocoTrainDataset(Dataset):
         paf_maps = np.zeros(shape=(n_pafs * 2, n_rows // self._stride, n_cols // self._stride), dtype=np.float32)
 
         label = sample['label']
+        print("PAF Label", label)
         for paf_idx in range(n_pafs):
             keypoint_a = label['keypoints'][BODY_PARTS_KPT_IDS[paf_idx][0]]
             keypoint_b = label['keypoints'][BODY_PARTS_KPT_IDS[paf_idx][1]]

@@ -90,6 +90,8 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
             #       , batch_data['mask'].shape, batch_data['image'].shape
             #       )
             # print("seg", batch_data['label']['segmentations'])
+            print("batched images size", batch_data['image'].shape)
+
             vis.images(batch_data['image'][:, [2, 1, 0], ...] + 0.5, 4, 2, "1", opts=dict(title="img"))
             vis.images(batch_data['keypoint_mask'].permute(1, 0, 2, 3), 4, 2, "2", opts=dict(title="kp_mask"))
             vis.images(batch_data['paf_mask'].permute(1, 0, 2, 3), 4, 2, "3", opts=dict(title="paf_mask"))

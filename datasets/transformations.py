@@ -9,6 +9,9 @@ class ConvertKeypoints:
         label = sample['label']
         h, w, _ = sample['image'].shape
         keypoints = label['keypoints']
+
+        print("kp len", len(keypoints))
+
         for keypoint in keypoints:  # keypoint[2] == 0: occluded, == 1: visible, == 2: not in image
             if keypoint[0] == keypoint[1] == 0:
                 keypoint[2] = 2
