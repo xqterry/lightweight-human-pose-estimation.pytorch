@@ -2,7 +2,7 @@ import os
 import torch
 from torch.utils.data import DataLoader
 
-from datasets.human36m import HM36Dataset
+from datasets.human36m import HM36Dataset, HM2DCropPad, HM2DRotate, HM2DFlip, HM2DScale
 
 import time
 import numpy as np
@@ -12,7 +12,7 @@ import torch.optim as optim
 import torchvision.transforms as T
 
 from modules.get_parameters import get_parameters_conv, get_parameters_bn, get_parameters_conv_depthwise
-from models.with_resnet34 import PoseEstimationWithResnet34
+from models.with_mobilenet import PoseEstimationWithMobileNetMultiple
 
 from shutil import copyfile
 
@@ -46,46 +46,57 @@ def preprocess(tensor):
     return tensor
 
 if __name__ == '__main__':
+    import datetime
     st = time.time()
 
-    batch = 24
+    batch = 40
     batches_per_iter = 1
-    log_after = 30
+    log_after = 3
     checkpoint_after = 600
     num_refinement_stages = 3
     eval_after = 13
 
-    dataset = HM36Dataset("d:/datasets/human3.6m", 8, 7, 1)
-    train_loader = DataLoader(dataset, batch_size=batch, shuffle=True, num_workers=1)
+    dataset = HM36Dataset("d:/datasets/human3.6m", 8, 7, 1, train_list=None,
+                          transform=T.Compose([
+                                HM2DScale(),
+                                HM2DRotate(pad=(0.5, 0.5, 0.5)),
+                                HM2DCropPad(crop_x=368, crop_y=368),
+                                HM2DFlip(0.5),
+                            ]),
+                          paf_ver=2,
+                          vgg_norm=False
+                          )
+    train_loader = DataLoader(dataset, batch_size=batch, shuffle=True, num_workers=2)
 
     from DGPT.Visualize.Viz import Viz
 
-    viz = Viz(dict(env="multiframes"))
+    viz = Viz(dict(env="mob_mf"))
 
     print("load data cost ", time.time() - st)
 
-    net = PoseEstimationWithResnet34(num_refinement_stages=num_refinement_stages)
+    # net = PoseEstimationWithMobileNetMultiple(num_refinement_stages=num_refinement_stages)
+    net = PoseEstimationWithMobileNetMultiple(3, 128, 18, 32)
 
-    base_lr = 3e-4
+    base_lr = 4e-4
 
     optimizer = optim.Adam([
         {'params': get_parameters_conv(net.ghost0, 'weight')},
         {'params': get_parameters_conv(net.ghost1, 'weight')},
         {'params': get_parameters_conv(net.ghost2, 'weight')},
-        {'params': get_parameters_conv(net.head, 'weight')},
-        {'params': get_parameters_conv(net.backbone, 'weight')},
-        {'params': get_parameters_conv_depthwise(net.head, 'weight'), 'weight_decay': 0},
+        {'params': get_parameters_conv(net.phase0, 'weight')},
+        {'params': get_parameters_conv(net.model, 'weight')},
+        {'params': get_parameters_conv_depthwise(net.phase0, 'weight'), 'weight_decay': 0},
         {'params': get_parameters_conv_depthwise(net.ghost0, 'weight'), 'weight_decay': 0},
         {'params': get_parameters_conv_depthwise(net.ghost1, 'weight'), 'weight_decay': 0},
         {'params': get_parameters_conv_depthwise(net.ghost2, 'weight'), 'weight_decay': 0},
-        {'params': get_parameters_conv_depthwise(net.backbone, 'weight'), 'weight_decay': 0},
-        {'params': get_parameters_bn(net.head, 'weight'), 'weight_decay': 0},
-        {'params': get_parameters_bn(net.backbone, 'weight'), 'weight_decay': 0},
+        {'params': get_parameters_conv_depthwise(net.model, 'weight'), 'weight_decay': 0},
+        {'params': get_parameters_bn(net.phase0, 'weight'), 'weight_decay': 0},
+        {'params': get_parameters_bn(net.model, 'weight'), 'weight_decay': 0},
         {'params': get_parameters_bn(net.ghost0, 'weight'), 'weight_decay': 0},
         {'params': get_parameters_bn(net.ghost1, 'weight'), 'weight_decay': 0},
         {'params': get_parameters_bn(net.ghost2, 'weight'), 'weight_decay': 0},
-        {'params': get_parameters_bn(net.head, 'bias'), 'lr': base_lr * 2, 'weight_decay': 0},
-        {'params': get_parameters_bn(net.backbone, 'bias'), 'lr': base_lr * 2, 'weight_decay': 0},
+        {'params': get_parameters_bn(net.phase0, 'bias'), 'lr': base_lr * 2, 'weight_decay': 0},
+        {'params': get_parameters_bn(net.model, 'bias'), 'lr': base_lr * 2, 'weight_decay': 0},
         {'params': get_parameters_bn(net.ghost0, 'bias'), 'lr': base_lr * 2, 'weight_decay': 0},
         {'params': get_parameters_bn(net.ghost1, 'bias'), 'lr': base_lr * 2, 'weight_decay': 0},
         {'params': get_parameters_bn(net.ghost2, 'bias'), 'lr': base_lr * 2, 'weight_decay': 0},
@@ -106,8 +117,10 @@ if __name__ == '__main__':
     drop_after_epoch = [100, 200, 260]
     scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=drop_after_epoch, gamma=0.333)
 
+    criterion = torch.nn.MSELoss()
+
     checkpoints_folder = "./multiframe_checkpoints"
-    checkpoint_fn = "./multiframe_checkpoints/M.pth"
+    checkpoint_fn = "./multiframe_checkpoints/MOBv3.pth"
     if os.path.exists(checkpoint_fn):
         checkpoint = torch.load(checkpoint_fn)
 
@@ -122,20 +135,17 @@ if __name__ == '__main__':
 
         net.load_state_dict(checkpoint['state_dict'])
     else:
-        net.load_state_dict(torch.load("./multiframe_checkpoints/init_r34_checkpoints.pt"))
+        print('load from init checkpoints')
+        net.load_state_dict(torch.load("./multiframe_checkpoints/init_mobile_mf_checkpoints.pt"))
 
     net = net.cuda()
     net.train()
 
-    heatmap_mask = torch.cat([
-        torch.ones(batch, 17, 56, 56),
-        torch.zeros(batch, 238, 56, 56),
-        torch.ones(batch, 1, 56, 56)
-    ],
-    1).cuda()
+    heatmap_mask = torch.ones(batch, 18, 46, 46).cuda()
 
     paf_masks = 1
 
+    start_time = time.time()
 
     for epochId in range(current_epoch, 280):
         total_losses = [0, 0] * (num_refinement_stages + 1)  # heatmaps loss, paf loss per stage
@@ -149,27 +159,41 @@ if __name__ == '__main__':
                 optimizer.zero_grad()
 
             x = batch_data['tensor'].cuda()
+
             x1 = batch_data['extra'][:, :3, ...].cuda()
             x2 = batch_data['extra'][:, 3:, ...].cuda()
 
-            x = preprocess(x)
-            x1 = preprocess(x1)
-            x2 = preprocess(x2)
+            # print(x.min(), x.max()) # to bgr ?
+            x = x[:, [2, 1, 0], ...]
+            x1 = x1[:, [2, 1, 0], ...]
+            x2 = x2[:, [2, 1, 0], ...]
+
+            x -= 0.5
+            x1 -= 0.5
+            x2 -= 0.5
+
+            # x = preprocess(x)
+            # x1 = preprocess(x1)
+            # x2 = preprocess(x2)
 
             # ww = rand_motion_blur_weight(3, 10, 360).cuda()
             # x = torch.nn.functional.conv2d(x, ww)
             # x1 = torch.nn.functional.conv2d(x1, ww)
             # x2 = torch.nn.functional.conv2d(x2, ww)
 
-            heatmap = batch_data['heatmap'].cuda()
+            heatmap = torch.cat([batch_data['heatmap'][:, :17, ...], batch_data['heatmap'][:, 255:, ...]], 1)
+            heatmap = heatmap.cuda()
             paf = batch_data['paf'].cuda()
 
             stages_output = net(x, x1, x2)
 
             losses = []
             for loss_idx in range(len(total_losses) // 2):
-                losses.append(masked_l2_loss(stages_output[loss_idx * 2], heatmap, heatmap_mask, batch))
-                losses.append(masked_l2_loss(stages_output[loss_idx * 2 + 1], paf, paf_masks, x.shape[0]))
+                loss0 = masked_l2_loss(stages_output[loss_idx * 2], heatmap, heatmap_mask, batch)
+                loss1 = masked_l2_loss(stages_output[loss_idx * 2 + 1], paf, paf_masks, x.shape[0])
+
+                losses.append(loss0)
+                losses.append(loss1)
                 total_losses[loss_idx * 2] += losses[-2].item() / batches_per_iter
                 total_losses[loss_idx * 2 + 1] += losses[-1].item() / batches_per_iter
 
@@ -199,8 +223,20 @@ if __name__ == '__main__':
                         loss_idx + 1, total_losses[loss_idx * 2] / log_after))
                 for loss_idx in range(len(total_losses)):
                     total_losses[loss_idx] = 0
+
+                xx = x[:1, ...].detach()
+                hh = heatmap[:1, :17, ...].detach()
+
+                hh = hh.squeeze(0).reshape(17, 1, hh.shape[2], hh.shape[3])
+
+                print(xx.shape, hh.shape)
+                viz.draw_images(xx, "inputs4")
+                viz.draw_images(hh, "inputs_heatmap4")
+
+                print("cost ", time.time() - start_time, " per ", log_after, "@", str(datetime.datetime.now()))
+                start_time = time.time()
             if num_iter % checkpoint_after == 0:
-                snapshot_name = '{}/checkpoint_iter_{}.pth'.format(checkpoints_folder, num_iter)
+                snapshot_name = '{}/mob_mf_v3_checkpoint_iter_{}.pth'.format(checkpoints_folder, num_iter)
                 torch.save({'state_dict': net.state_dict(),
                             'optimizer': optimizer.state_dict(),
                             'scheduler': scheduler.state_dict(),
@@ -232,7 +268,7 @@ if __name__ == '__main__':
                 t = T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(t)
 
                 t = t.cuda().unsqueeze(0)
-                t = torch.nn.functional.interpolate(t, (256, 256), mode='bilinear', align_corners=False)
+                t = torch.nn.functional.interpolate(t, (368, 368), mode='bilinear', align_corners=False)
 
                 blur = GaussianBlur_CUDA(0.5)
                 # t = blur(t)
@@ -245,9 +281,11 @@ if __name__ == '__main__':
                 heatmaps = outputs[-2][:, :17]  # .squeeze(0)
                 paf_maps = outputs[-1]  # .squeeze(0)
 
-                # heatmap = heatmaps.sum(1, keepdim=True)
+                heatmap2 = heatmaps.sum(1, keepdim=True)
+                heatmap2 = torch.nn.functional.interpolate(heatmap2, size=512, mode='bilinear', align_corners=False)
                 # heatmap = heatmap[:, :, :255].sum(2)
                 heatmap = heatmaps.squeeze(0).reshape(17, 1, heatmaps.shape[2], heatmaps.shape[3])
                 viz.draw_images(heatmap, "output_heatmap")
+                viz.draw_images(heatmap2, "sum_heatmap")
 
                 net.train()

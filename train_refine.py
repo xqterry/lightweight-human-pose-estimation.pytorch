@@ -19,21 +19,28 @@ from val import evaluate
 cv2.setNumThreads(0)
 cv2.ocl.setUseOpenCL(False)  # To prevent freeze of DataLoader
 
-import visdom
 import numpy as np
 
-from modules.keypoints import BODY_PARTS_PAF_IDS, BODY_PARTS_KPT_IDS
+from augment_test import rand_motion_blur_weight
+from DGPT.Utils.CUDAFuncs.GaussianBlur import GaussianBlur_CUDA
 
-vis = visdom.Visdom()
+def preprocess(tensor):
+    g = np.random.randint(0, 7)
+    n = np.random.sample() * 0.01
+    tensor = tensor + n
+    if g > 0:
+        degrade_blur = GaussianBlur_CUDA(g / 18)
+        tensor = degrade_blur(tensor)
 
-BODY_CONN_COLOR = (
-    # pelvis     r_hip           r_knee       r_ank         L_hip            L_knee         L_ank            Spine
-    [0, 255, 0], [255, 0, 255], [0, 0, 255], [0, 255, 255], [255, 255, 255], [0, 128, 255], [204, 204, 255], [255, 102, 255],
-    # neck       Head         Site              L_shoulder  L_elbow      L_wrist      R_shoulder   R_elbow
-    [255, 0, 0], [0, 255, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0],
-    # R_wrist
-    [255, 255, 255], [255, 255, 255], [255, 255, 255], [255, 255, 255]
-)
+    pre_blur = GaussianBlur_CUDA(1)
+    tensor = pre_blur(tensor)
+
+    if np.random.sample() < 0.5:
+        ww = rand_motion_blur_weight(3, 5, 360).cuda()
+        tensor = torch.nn.functional.conv2d(tensor, ww, None, 1, ww.shape[2] // 2)
+
+    return tensor
+
 
 def train(prepared_train_labels, train_images_folder, num_refinement_stages, base_lr, batch_size, batches_per_iter,
           num_workers, checkpoint_path, weights_only, from_mobilenet, checkpoints_folder, log_after,
@@ -85,31 +92,28 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
                 scheduler.load_state_dict(checkpoint['scheduler'])
                 num_iter = checkpoint['iter']
                 current_epoch = checkpoint['current_epoch']
+                print("optimizer LR")
+                for param_group in optimizer.param_groups:
+                    print(param_group['lr'])
+
+                for state in optimizer.state.values():
+                    for k, v in state.items():
+                        if isinstance(v, torch.Tensor):
+                            state[k] = v.cuda()
 
     net = DataParallel(net).cuda()
     net.train()
+
+    from DGPT.Visualize.Viz import Viz
+    viz = Viz(dict(env="refine"))
+
     for epochId in range(current_epoch, 280):
-        scheduler.step()
+        # scheduler.step()
         total_losses = [0, 0] * (num_refinement_stages + 1)  # heatmaps loss, paf loss per stage
         batch_per_iter_idx = 0
         for batch_data in train_loader:
             if batch_per_iter_idx == 0:
                 optimizer.zero_grad()
-
-            # print("show imgs"
-            #       , batch_data['keypoint_maps'].shape, batch_data['paf_maps'].shape
-            #       , batch_data['keypoint_mask'].shape, batch_data['paf_mask'].shape
-            #       , batch_data['mask'].shape, batch_data['image'].shape
-            #       )
-            # print("seg", batch_data['label']['segmentations'])
-            print("batched images size", batch_data['image'].shape)
-
-            vis.images(batch_data['image'][:, [2, 1, 0], ...] + 0.5, 4, 2, "1", opts=dict(title="img"))
-            vis.images(batch_data['keypoint_mask'].permute(1, 0, 2, 3), 4, 2, "2", opts=dict(title="kp_mask"))
-            vis.images(batch_data['paf_mask'].permute(1, 0, 2, 3), 4, 2, "3", opts=dict(title="paf_mask"))
-            vis.images(batch_data['keypoint_maps'].permute(1, 0, 2, 3), 4, 2, "4", opts=dict(title="keypoint_maps"))
-            vis.images(batch_data['paf_maps'].permute(1, 0, 2, 3), 4, 2, "5", opts=dict(title="paf_maps"))
-            vis.images(batch_data['mask'].unsqueeze(0), 4, 2, "6", opts=dict(title="MASK"))
 
             images = batch_data['image'].cuda()
             keypoint_masks = batch_data['keypoint_mask'].cuda()
@@ -117,34 +121,7 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
             keypoint_maps = batch_data['keypoint_maps'].cuda()
             paf_maps = batch_data['paf_maps'].cuda()
 
-            pafs = batch_data['paf_maps'][0].permute(1, 2, 0).numpy()
-
-            scale = 4
-            img_p = np.zeros((pafs.shape[1] * 8, pafs.shape[0] * 8, 3), dtype=np.uint8)
-            # pafs[pafs < 0.07] = 0
-            for idx in range(len(BODY_PARTS_PAF_IDS)):
-                # print(pp, pafs.shape)
-                pp = BODY_PARTS_PAF_IDS[idx]
-                k_idx = BODY_PARTS_KPT_IDS[idx]
-                cc = BODY_CONN_COLOR[idx]
-
-                vx = pafs[:, :, pp[0]]
-                vy = pafs[:, :, pp[1]]
-                for i in range(pafs.shape[1]):
-                    for j in range(pafs.shape[0]):
-                        a = (i * 2 * scale, j * 2 * scale)
-                        b = (2 * int((i + vx[j, i] * 3) * scale), 2 * int((j + vy[j, i] * 3) * scale))
-                        if a[0] == b[0] and a[1] == b[1]:
-                            continue
-
-                        cv2.line(img_p, a, b, cc, 1)
-
-                # break
-
-            cv2.imshow("paf", img_p)
-            key = cv2.waitKey(0)
-            if key == 27:  # esc
-                exit(0)
+            images = preprocess(images)
 
             stages_output = net(images)
 
@@ -160,11 +137,15 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
                 loss += losses[loss_idx]
             loss /= batches_per_iter
             loss.backward()
+
+            viz.draw_line(num_iter, loss.item(), "Loss")
+
             batch_per_iter_idx += 1
             if batch_per_iter_idx == batches_per_iter:
                 optimizer.step()
                 batch_per_iter_idx = 0
                 num_iter += 1
+                scheduler.step()
             else:
                 continue
 
@@ -176,6 +157,24 @@ def train(prepared_train_labels, train_images_folder, num_refinement_stages, bas
                         loss_idx + 1, total_losses[loss_idx * 2] / log_after))
                 for loss_idx in range(len(total_losses)):
                     total_losses[loss_idx] = 0
+
+                xx = images[:1, ...].detach()#.clone()
+                hh = keypoint_maps[:1,  ...].detach()#.clone()
+                mm = keypoint_masks[:1, ...].detach()#.clone()
+
+                print(xx.shape, hh.shape, mm.shape)
+
+                hh = hh.squeeze(0).reshape(19, 1, hh.shape[2], hh.shape[3])
+                mm = mm.squeeze(0).reshape(19, 1, hh.shape[2], hh.shape[3])
+
+                viz.draw_images(xx, "input1")
+                viz.draw_images(hh, "input1_heatmap")
+                viz.draw_images(mm, "input1_mask")
+
+                oh = stages_output[-2].detach()[:1, :-1, ...]
+                oh = oh.reshape(oh.shape[1], 1, oh.shape[2], oh.shape[3])
+                viz.draw_images(oh, "output1_heatmap")
+
             if num_iter % checkpoint_after == 0:
                 snapshot_name = '{}/checkpoint_iter_{}.pth'.format(checkpoints_folder, num_iter)
                 torch.save({'state_dict': net.module.state_dict(),
@@ -196,24 +195,24 @@ if __name__ == '__main__':
                         help='path to the file with prepared annotations')
     parser.add_argument('--train-images-folder', type=str, required=True, help='path to COCO train images folder')
     parser.add_argument('--num-refinement-stages', type=int, default=1, help='number of refinement stages')
-    parser.add_argument('--base-lr', type=float, default=4e-5, help='initial learning rate')
-    parser.add_argument('--batch-size', type=int, default=1, help='batch size')
+    parser.add_argument('--base-lr', type=float, default=5e-4, help='initial learning rate')
+    parser.add_argument('--batch-size', type=int, default=40, help='batch size')
     parser.add_argument('--batches-per-iter', type=int, default=1, help='number of batches to accumulate gradient from')
-    parser.add_argument('--num-workers', type=int, default=1, help='number of workers')
+    parser.add_argument('--num-workers', type=int, default=2, help='number of workers')
     parser.add_argument('--checkpoint-path', type=str, required=True, help='path to the checkpoint to continue training from')
     parser.add_argument('--from-mobilenet', action='store_true',
                         help='load weights from mobilenet feature extractor')
     parser.add_argument('--weights-only', action='store_true',
                         help='just initialize layers with pre-trained weights and start training from the beginning')
-    parser.add_argument('--experiment-name', type=str, default='default',
+    parser.add_argument('--experiment-name', type=str, default='refine4',
                         help='experiment name to create folder for checkpoints')
-    parser.add_argument('--log-after', type=int, default=100, help='number of iterations to print train loss')
+    parser.add_argument('--log-after', type=int, default=53, help='number of iterations to print train loss')
 
     parser.add_argument('--val-labels', type=str, required=True, help='path to json with keypoints val labels')
     parser.add_argument('--val-images-folder', type=str, required=True, help='path to COCO val images folder')
     parser.add_argument('--val-output-name', type=str, default='detections.json',
                         help='name of output json file with detected keypoints')
-    parser.add_argument('--checkpoint-after', type=int, default=5000,
+    parser.add_argument('--checkpoint-after', type=int, default=2000,
                         help='number of iterations to save checkpoint')
     parser.add_argument('--val-after', type=int, default=5000,
                         help='number of iterations to run validation')

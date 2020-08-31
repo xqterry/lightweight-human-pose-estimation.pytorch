@@ -3,6 +3,8 @@ from torch.utils.data import DataLoader
 
 from human36m import HM36Dataset
 
+from DGPT.Utils.CUDAFuncs.GaussianBlur import GaussianBlur_CUDA
+
 import time
 import numpy as np
 import cv2
@@ -14,14 +16,46 @@ def CamProj(x, y, z, fx, fy, u, v, k=1.0):
     cam_y = cam_y / k + v
     return cam_x, cam_y
 
+BODY_CONN_COLOR = (
+    # pelvis     r_hip           r_knee       r_ank         L_hip            L_knee         L_ank            Spine
+    [0, 255, 0], [255, 0, 255], [0, 0, 255], [0, 255, 255], [255, 255, 255], [0, 128, 255], [204, 204, 255], [255, 102, 255],
+    # neck       Head         Site              L_shoulder  L_elbow      L_wrist      R_shoulder   R_elbow
+    [255, 0, 0], [0, 255, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0],
+    # R_wrist
+    [255, 255, 255]
+)
+
+BODY_PARTS_KPT_IDS = [[8, 1],
+                      [1, 2],
+                      [2, 3],
+                      [8, 4],
+                      [4, 5],
+                      [5, 6],
+                      [8, 14],
+                      [14, 15],
+                      [15, 16],
+                      [8, 11],
+                      [11, 12],
+                      [12, 13],
+                      [8, 9],
+                      [9, 10],
+                      [8, 7],
+                      [7, 0],
+                      ]
+BODY_PARTS_PAF_IDS = ([0, 1], [2, 3], [4, 5],
+                      [6, 7], [8, 9], [10, 11], [12, 13], [14, 15], [16, 17], [18, 19],
+                      [20, 21], [22, 23], [24, 25], [26, 27], [28, 29], [30, 31])
+
 if __name__ == '__main__':
     st = time.time()
 
-    batch = 2
-    dataset = HM36Dataset("d:/datasets/human3.6m", 8, 7, 1)
+    batch = 1
+    dataset = HM36Dataset("d:/datasets/human3.6m", 8, 7, 1, [1], paf_ver=2)
     train_loader = DataLoader(dataset, batch_size=batch, shuffle=True, num_workers=1)
 
     print("load data cost ", time.time() - st)
+
+    blur = GaussianBlur_CUDA(0.9)
 
     for batch_data in train_loader:
         # print(batch_data)
@@ -37,15 +71,17 @@ if __name__ == '__main__':
             focal *= scale
 
             # print(rot.shape, trans.shape, len(batch_data['joints']))
-
-            img = batch_data['tensor'][i].permute(1, 2, 0).numpy()
+            img = batch_data['tensor'][i].cuda().unsqueeze(0)
+            img = blur(img)
+            img = img.cpu().squeeze(0).permute(1, 2, 0).numpy()
             img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
             # img1 = batch_data['tensor1'][i].permute(1, 2, 0).numpy()
             # img1 = cv2.cvtColor(img1, cv2.COLOR_RGB2BGR)
 
             heatmap = batch_data['heatmap'][i].permute(1, 2, 0).numpy()
-            heatmap = heatmap[:, :, :255].sum(2)
+            # heatmap = heatmap[:, :, :255].sum(2)
+            heatmap = heatmap[:, :, 255:]#.sum(2)
             heatmap = cv2.cvtColor(heatmap, cv2.COLOR_GRAY2BGR)
             heatmap = cv2.resize(heatmap, (512, 512))
 
@@ -68,7 +104,8 @@ if __name__ == '__main__':
             left = [4, 5, 6, 11, 12, 13]
             for j in range(len(batch_data['joints_2d'][i])):
                 xyz = batch_data['joints_2d'][i][j]
-                color = [0, 255, 255] if j in left else [0, 255, 0]
+                color = BODY_CONN_COLOR[j]
+                # color = [0, 255, 255] if j in left else [0, 255, 0]
                 sz = 5 if j in left else 3
                 cv2.circle(img, (int(xyz[0].item()), int(xyz[1].item())), sz, color, -1)
 
@@ -84,6 +121,32 @@ if __name__ == '__main__':
                 ie = cv2.cvtColor(e, cv2.COLOR_RGB2BGR)
                 cv2.imshow(f"extra_{j}", ie)
 
-            key = cv2.waitKey(2000)
+            pafs = batch_data['paf'][i].permute(1, 2, 0).numpy()
+
+            scale = 4
+            img_p = np.zeros((pafs.shape[1] * 8, pafs.shape[0] * 8, 3), dtype=np.uint8)
+            # pafs[pafs < 0.07] = 0
+            for idx in range(len(BODY_PARTS_PAF_IDS)):
+                # print(pp, pafs.shape)
+                pp = BODY_PARTS_PAF_IDS[idx]
+                k_idx = BODY_PARTS_KPT_IDS[idx]
+                cc = BODY_CONN_COLOR[idx]
+
+                vx = pafs[:, :, pp[0]]
+                vy = pafs[:, :, pp[1]]
+                for i in range(pafs.shape[1]):
+                    for j in range(pafs.shape[0]):
+                        a = (i * 2 * scale, j * 2 * scale)
+                        b = (2 * int((i + vx[j, i] * 3) * scale), 2 * int((j + vy[j, i] * 3) * scale))
+                        if a[0] == b[0] and a[1] == b[1]:
+                            continue
+
+                        cv2.line(img_p, a, b, cc, 1)
+
+                # break
+
+            cv2.imshow("paf", img_p)
+
+            key = cv2.waitKey(0)
             if key == 27:  # esc
                 exit(0)

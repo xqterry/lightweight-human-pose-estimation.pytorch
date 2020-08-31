@@ -42,6 +42,36 @@ class OneEuroFilter:
         self.x_previous = x
         return x_filtered
 
+class KalmanFilter:
+    def __init__(self, q=0.001, r=0.0015):
+        self.param_Q = q
+        self.param_R = r
+
+        self.K = [0.0, 0.0]
+        self.P = [0.0, 0.0]
+        self.X = [0.0, 0.0]
+
+        self.pos = None
+
+    def __call__(self, now_xy):
+        self.update()
+        x = now_xy[0]
+        y = now_xy[1]
+        if self.pos is not None:
+            self.pos[0] = self.X[0] + (x - self.X[0]) * self.K[0]
+            self.pos[1] = self.X[1] + (y - self.X[1]) * self.K[1]
+        else:
+            self.pos = [float(x), float(y)]
+
+        self.X = self.pos
+        # print("IN", x, y, " OUT", self.X)
+        return self.pos
+
+    def update(self):
+        self.K[0] = (self.P[0] + self.param_Q) / (self.P[0] + self.param_R + self.param_Q)
+        self.K[1] = (self.P[1] + self.param_Q) / (self.P[1] + self.param_R + self.param_Q)
+        self.P[0] = self.param_R * (self.P[0] + self.param_Q) / (self.param_R + self.P[0] + self.param_Q)
+        self.P[1] = self.param_R * (self.P[1] + self.param_Q) / (self.param_R + self.P[1] + self.param_Q)
 
 if __name__ == '__main__':
     filter = OneEuroFilter(freq=15, beta=0.1)

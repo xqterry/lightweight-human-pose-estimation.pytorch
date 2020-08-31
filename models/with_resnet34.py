@@ -4,6 +4,200 @@ import torchvision
 
 from torchvision.models.resnet import Bottleneck, BasicBlock, conv1x1
 
+class ResNetHead(nn.Module):
+    def __init__(self, groups=1, width_per_group=64, replace_stride_with_dilation=None,
+                 norm_layer=None):
+        super(ResNetHead, self).__init__()
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        self._norm_layer = norm_layer
+
+        self.inplanes = 64
+        self.dilation = 1
+        if replace_stride_with_dilation is None:
+            # each element in the tuple indicates if we should replace
+            # the 2x2 stride with a dilated convolution instead
+            replace_stride_with_dilation = [False, False, False]
+        if len(replace_stride_with_dilation) != 3:
+            raise ValueError("replace_stride_with_dilation should be None "
+                             "or a 3-element tuple, got {}".format(replace_stride_with_dilation))
+        self.groups = groups
+        self.base_width = width_per_group
+        self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3,
+                               bias=False)
+        self.bn1 = norm_layer(self.inplanes)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        return x
+
+
+class ResNetPart1(nn.Module):
+    def __init__(self, block, layers, num_classes=1000, zero_init_residual=False,
+                 groups=1, width_per_group=64, replace_stride_with_dilation=None,
+                 norm_layer=None):
+        super(ResNetPart1, self).__init__()
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        self._norm_layer = norm_layer
+
+        self.inplanes = 64
+        self.dilation = 1
+        if replace_stride_with_dilation is None:
+            # each element in the tuple indicates if we should replace
+            # the 2x2 stride with a dilated convolution instead
+            replace_stride_with_dilation = [False, False, False]
+        if len(replace_stride_with_dilation) != 3:
+            raise ValueError("replace_stride_with_dilation should be None "
+                             "or a 3-element tuple, got {}".format(replace_stride_with_dilation))
+        self.groups = groups
+        self.base_width = width_per_group
+
+        self.layer1 = self._make_layer(block, 64, layers[0])
+
+        # self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        # self.fc = nn.Linear(512 * block.expansion, num_classes)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+        # Zero-initialize the last BN in each residual branch,
+        # so that the residual branch starts with zeros, and each residual block behaves like an identity.
+        # This improves the model by 0.2~0.3% according to https://arxiv.org/abs/1706.02677
+        if zero_init_residual:
+            for m in self.modules():
+                if isinstance(m, Bottleneck):
+                    nn.init.constant_(m.bn3.weight, 0)
+                elif isinstance(m, BasicBlock):
+                    nn.init.constant_(m.bn2.weight, 0)
+
+    def _make_layer(self, block, planes, blocks, stride=1, dilate=False):
+        norm_layer = self._norm_layer
+        downsample = None
+        previous_dilation = self.dilation
+        if dilate:
+            self.dilation *= stride
+            stride = 1
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                conv1x1(self.inplanes, planes * block.expansion, stride),
+                norm_layer(planes * block.expansion),
+            )
+
+        layers = []
+        layers.append(block(self.inplanes, planes, stride, downsample, self.groups,
+                            self.base_width, previous_dilation, norm_layer))
+        self.inplanes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(block(self.inplanes, planes, groups=self.groups,
+                                base_width=self.base_width, dilation=self.dilation,
+                                norm_layer=norm_layer))
+
+        return nn.Sequential(*layers)
+
+    def _forward_impl(self, x):
+        x = self.layer1(x)
+        return x
+
+    def forward(self, x):
+        return self._forward_impl(x)
+
+
+class ResNetPart2(nn.Module):
+
+    def __init__(self, block, layers, num_classes=1000, zero_init_residual=False,
+                 groups=1, width_per_group=64, replace_stride_with_dilation=None,
+                 norm_layer=None):
+        super(ResNetPart2, self).__init__()
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        self._norm_layer = norm_layer
+
+        self.inplanes = 64
+        self.dilation = 1
+        if replace_stride_with_dilation is None:
+            # each element in the tuple indicates if we should replace
+            # the 2x2 stride with a dilated convolution instead
+            replace_stride_with_dilation = [False, False, False]
+        if len(replace_stride_with_dilation) != 3:
+            raise ValueError("replace_stride_with_dilation should be None "
+                             "or a 3-element tuple, got {}".format(replace_stride_with_dilation))
+        self.groups = groups
+        self.base_width = width_per_group
+
+        self.inplanes = 64 * block.expansion
+
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2,
+                                       dilate=replace_stride_with_dilation[0])
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2,
+                                       dilate=replace_stride_with_dilation[1])
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2,
+                                       dilate=replace_stride_with_dilation[2])
+
+        # self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        # self.fc = nn.Linear(512 * block.expansion, num_classes)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+        # Zero-initialize the last BN in each residual branch,
+        # so that the residual branch starts with zeros, and each residual block behaves like an identity.
+        # This improves the model by 0.2~0.3% according to https://arxiv.org/abs/1706.02677
+        if zero_init_residual:
+            for m in self.modules():
+                if isinstance(m, Bottleneck):
+                    nn.init.constant_(m.bn3.weight, 0)
+                elif isinstance(m, BasicBlock):
+                    nn.init.constant_(m.bn2.weight, 0)
+
+    def _make_layer(self, block, planes, blocks, stride=1, dilate=False):
+        norm_layer = self._norm_layer
+        downsample = None
+        previous_dilation = self.dilation
+        if dilate:
+            self.dilation *= stride
+            stride = 1
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                conv1x1(self.inplanes, planes * block.expansion, stride),
+                norm_layer(planes * block.expansion),
+            )
+
+        layers = []
+        layers.append(block(self.inplanes, planes, stride, downsample, self.groups,
+                            self.base_width, previous_dilation, norm_layer))
+        self.inplanes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(block(self.inplanes, planes, groups=self.groups,
+                                base_width=self.base_width, dilation=self.dilation,
+                                norm_layer=norm_layer))
+
+        return nn.Sequential(*layers)
+
+    def _forward_impl(self, x):
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        return x
+
+    def forward(self, x):
+        return self._forward_impl(x)
+
 class ResNetFeatures(nn.Module):
 
     def __init__(self, block, layers, num_classes=1000, zero_init_residual=False,
@@ -90,6 +284,7 @@ class ResNetFeatures(nn.Module):
         x = self.maxpool(x)
 
         x = self.layer1(x)
+        print("layer1 out", x.shape)
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
@@ -103,18 +298,168 @@ class ResNetFeatures(nn.Module):
     def forward(self, x):
         return self._forward_impl(x)
 
+class Upsample4x(nn.Module):
+    def __init__(self, n_channels):
+        super(Upsample4x, self).__init__()
+        self.conv = nn.Conv2d(n_channels, n_channels, 3, 1, 1)
+
+    def forward(self, x):
+        x = torch.nn.functional.interpolate(x, scale_factor=4, mode='bilinear', align_corners=False)
+        x = torch.relu(self.conv(x))
+        return x
+
+from models.with_mobilenet import Cpm, InitialStage, RefinementStage
+
 class PoseEstimationWithResnet34(nn.Module):
-    def __init__(self, num_refinement_stages=3, num_channels=128, num_heatmaps=19, num_pafs=38):
+    def __init__(self, num_refinement_stages=3, num_channels=256, num_heatmaps=256, num_pafs=32):
         super().__init__()
+        self.ghost0 = ResNetHead()
+        self.head = ResNetPart1(BasicBlock, [3, 4, 6, 3])  # resnet34
+        self.ghost1 = ResNetHead()
+        self.ghost2 = ResNetHead()
+        self.backbone = ResNetPart2(BasicBlock, [3, 4, 6, 3])
+
+        self.demon = nn.Sequential(
+            nn.Conv2d(128, 128, 3, 1, 1, 1, 128),
+            nn.BatchNorm2d(128),
+            nn.ReLU(True),
+            nn.Conv2d(128, 64, 1, 1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(True)
+        )
+
+        self.cpm = Cpm(512, num_channels)
+
+        self.upsample4 = Upsample4x(num_channels)
+
+        self.initial_stage = InitialStage(num_channels, num_heatmaps, num_pafs)
+        self.refinement_stages = nn.ModuleList()
+        for idx in range(num_refinement_stages):
+            self.refinement_stages.append(RefinementStage(num_channels + num_heatmaps + num_pafs, num_channels,
+                                                          num_heatmaps, num_pafs))
 
     def forward(self, x, x1, x2):
-        pass
+        x = self.ghost0(x)
+        x1 = self.ghost1(x1)
+        x2 = self.ghost2(x2)
+        x3 = torch.cat((x, (x1 + x2)), 1)
+        x = self.head(x)
+        x3 = self.demon(x3)
+        x = self.backbone(x + x3)
+
+        x = self.cpm(x)
+        x = self.upsample4(x)
+
+        stages_output = self.initial_stage(x)
+        for refinement_stage in self.refinement_stages:
+            stages_output.extend(
+                refinement_stage(torch.cat([x, stages_output[-2], stages_output[-1]], dim=1)))
+
+        return stages_output
+
+class PoseEstimationWithResnet50Single(nn.Module):
+    def __init__(self, num_channels=256, num_heatmaps=17):
+        super().__init__()
+        self.inplanes = 64
+
+        self.ghost0 = ResNetHead()
+        self.head = ResNetPart1(Bottleneck, [3, 4, 6, 3])  # resnet50
+        self.backbone = ResNetPart2(Bottleneck, [3, 4, 6, 3])
+
+        self.inplanes = self.backbone.inplanes
+
+        # used for deconv layers
+        self.deconv_layers = self._make_deconv_layer(
+            3,
+            [256, 256, 256],
+            [4, 4, 4],
+        )
+
+        self.final_layer = nn.Conv2d(
+            in_channels=self.inplanes,
+            out_channels=num_heatmaps,
+            kernel_size=1,
+            stride=1,
+            padding=0
+        )
+
+    def _get_deconv_cfg(self, deconv_kernel, index):
+        if deconv_kernel == 4:
+            padding = 1
+            output_padding = 0
+        elif deconv_kernel == 3:
+            padding = 1
+            output_padding = 1
+        elif deconv_kernel == 2:
+            padding = 0
+            output_padding = 0
+
+        return deconv_kernel, padding, output_padding
+
+    def _make_deconv_layer(self, num_layers, num_filters, num_kernels):
+        assert num_layers == len(num_filters), \
+            'ERROR: num_deconv_layers is different len(num_deconv_filters)'
+        assert num_layers == len(num_kernels), \
+            'ERROR: num_deconv_layers is different len(num_deconv_filters)'
+
+        layers = []
+        for i in range(num_layers):
+            kernel, padding, output_padding = \
+                self._get_deconv_cfg(num_kernels[i], i)
+
+            planes = num_filters[i]
+            layers.append(
+                nn.ConvTranspose2d(
+                    in_channels=self.inplanes,
+                    out_channels=planes,
+                    kernel_size=kernel,
+                    stride=2,
+                    padding=padding,
+                    output_padding=output_padding,
+                    bias=False))
+            layers.append(nn.BatchNorm2d(planes, momentum=0.1))
+            layers.append(nn.ReLU(inplace=True))
+            self.inplanes = planes
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = self.ghost0(x)
+        x = self.head(x)
+        # print("head out", x.shape)
+        x = self.backbone(x)
+
+        x = self.deconv_layers(x)
+        x = self.final_layer(x)
+
+        return x
 
 if __name__ == '__main__':
-    model = ResNetFeatures(BasicBlock, [3, 4, 6, 3])
+    # model = ResNetFeatures(BasicBlock, [3, 4, 6, 3])
+    model = PoseEstimationWithResnet34()
     x = torch.randn(1, 3, 448, 448)
-    y = model(x)
+    x1 = torch.randn(1, 3, 448, 448)
+    x2 = torch.randn(1, 3, 448, 448)
 
-    print(y.shape)
+    outputs = model(x, x1, x2)
 
+    for o in outputs:
+        print(o.shape)
 
+    from torchvision.models import resnet34
+    print("load pretrained weights")
+    net = resnet34(True)
+
+    st = net.state_dict()
+    dt = model.state_dict()
+    # print(st.keys(), dt.keys())
+    for k, v in dt.items():
+        if k.find('ghost') != -1 or k.find('head') != -1 or k.find('backbone') != -1:
+            sk = k[k.find('.') + 1:]
+            # print("Find k ", sk, " by ", k)
+            if dt[k].shape != st[sk].shape:
+                print("unmatch", k)
+            dt[k] = st[sk]
+
+    model.load_state_dict(dt)
+    torch.save(model.state_dict(), "../multiframe_checkpoints/init_r34_checkpoints.pt")

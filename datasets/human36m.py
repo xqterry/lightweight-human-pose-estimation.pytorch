@@ -182,7 +182,7 @@ class HM2DRotate:
 
 
 class HM2DCropPad:
-    def __init__(self, pad=[0.5, 0.5, 0.5], center_perterb_max=50, crop_x=448, crop_y=448):
+    def __init__(self, pad=[0.5, 0.5, 0.5], center_perterb_max=80, crop_x=448, crop_y=448):
         self._pad = pad
         self._center_perterb_max = center_perterb_max
         self._crop_x = crop_x
@@ -279,7 +279,7 @@ class HM2DCropPad:
 
 
 class HM2DScale:
-    def __init__(self, prob=1, min_scale=0.5, max_scale=1.2, target_dist=0.6):
+    def __init__(self, prob=1, min_scale=0.25, max_scale=1.2, target_dist=0.6):
         self._prob = prob
         self._min_scale = min_scale
         self._max_scale = max_scale
@@ -377,7 +377,7 @@ def create_heatmap(keypoints, h, w, stride, sigma):
                     if tensor[i, map_y, map_x] > 1:
                         tensor[i, map_y, map_x] = 1
 
-    tensor[-1] = 1 - tensor.max(0).values
+    tensor[-1] = 1 - tensor[:len(keypoints), ...].max(0).values
 
     return tensor
 
@@ -442,18 +442,49 @@ def create_paf_map(keypoints, h, w, stride, thickness):
 
     return paf_map
 
+def create_paf_map_v2(keypoints, h, w, stride, thickness):
+    PAF_GROUP_IDX = [[8, 1],
+                     [1, 2],
+                     [2, 3],
+                     [8, 4],
+                     [4, 5],
+                     [5, 6],
+                     [8, 14],
+                     [14, 15],
+                     [15, 16],
+                     [8, 11],
+                     [11, 12],
+                     [12, 13],
+                     [8, 9],
+                     [9, 10],
+                     [8, 7],
+                     [7, 0],
+                     ]
+    paf_map = torch.zeros(len(PAF_GROUP_IDX) * 2, h // stride, w // stride)
+    for i in range(len(PAF_GROUP_IDX)):
+        pp = PAF_GROUP_IDX[i]
+        a = keypoints[pp[0]]
+        b = keypoints[pp[1]]
+        if a[3] <= 1 and b[3] <= 1:
+            set_paf(paf_map[i * 2:i * 2 +2, :, :], a, b, stride, thickness)
+
+    return paf_map
+
 
 class HM36Dataset(Dataset):
-    def __init__(self, data_folder, stride, sigma, paf_thickness, transform=None):
+    def __init__(self, data_folder, stride, sigma, paf_thickness, train_list=None, transform=None, paf_ver=1, vgg_norm=True):
         super().__init__()
+        if train_list is None:
+            train_list = [1, 5, 6, 7, 8, 9]
         self._data_folder = data_folder
         self._stride = stride
         self._sigma = sigma
         self._paf_thickness = paf_thickness
         self._transform = transform
+        self._vgg_norm = vgg_norm
 
-        # self.train_list = [1, 5, 6, 7, 8, 9]
-        self.train_list = [1]
+        self.train_list = train_list
+        # self.train_list = [1]
 
         self.cameras = self._load_cameras()
 
@@ -478,14 +509,20 @@ class HM36Dataset(Dataset):
         self.all_data = all_data
         self.all_joints = all_joints
 
-        self._transform = T.Compose([
-            HM2DScale(),
-            HM2DRotate(pad=(0.5, 0.5, 0.5)),
-            HM2DCropPad(),
-            HM2DFlip(0.5)
-            # CropPad(pad=(128, 128, 128)),
-            # Flip()
-        ])
+        if transform is None:
+            self._transform = T.Compose([
+                HM2DScale(),
+                HM2DRotate(pad=(0.5, 0.5, 0.5)),
+                HM2DCropPad(),
+                HM2DFlip(0.5),
+                # T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                # CropPad(pad=(128, 128, 128)),
+                # Flip()
+            ])
+        else:
+            self._transform = transform
+
+        self.paf_version = paf_ver
 
 
     def _load_camera_params(self, sub_id, cam_id):
@@ -627,10 +664,17 @@ class HM36Dataset(Dataset):
 
         sample = self._transform(sample)
 
-        _, h, w = sample['tensor'].shape
-        sample['heatmap'] = create_heatmap(sample['joints_2d'], h, w, 8, 7)
+        if self._vgg_norm:
+            norm = T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            sample['tensor'] = norm(sample['tensor'])
+            sample['extra'] = [norm(x) for x in sample['extra']]
 
-        sample['paf'] = create_paf_map(sample['joints_2d'], h, w, 8, 1)
+        _, h, w = sample['tensor'].shape
+        sample['heatmap'] = create_heatmap(sample['joints_2d'], h, w, self._stride, 7)
+
+        sample['paf'] = create_paf_map(sample['joints_2d'], h, w, self._stride, 1) \
+            if self.paf_version == 1 \
+            else create_paf_map_v2(sample['joints_2d'], h, w, self._stride, 1)
 
         # print("extra count", len(sample['extra']))
 

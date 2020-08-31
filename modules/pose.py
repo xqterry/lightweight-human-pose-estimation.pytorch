@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 from modules.keypoints import BODY_PARTS_KPT_IDS, BODY_PARTS_PAF_IDS
-from modules.one_euro_filter import OneEuroFilter
+from modules.one_euro_filter import OneEuroFilter, KalmanFilter
 
 
 class Pose:
@@ -32,6 +32,7 @@ class Pose:
         self.bbox = Pose.get_bbox(self.keypoints)
         self.id = None
         self.filters = [[OneEuroFilter(), OneEuroFilter()] for _ in range(Pose.num_kpts)]
+        self.kalman_filters = [KalmanFilter() for _ in range(Pose.num_kpts)]
 
     @staticmethod
     def get_bbox(keypoints):
@@ -141,6 +142,12 @@ def track_poses(previous_poses, current_poses, threshold=3, smooth=False):
                 if (best_matched_pose_id is not None
                         and previous_poses[best_matched_id].keypoints[kpt_id, 0] != -1):
                     current_pose.filters[kpt_id] = previous_poses[best_matched_id].filters[kpt_id]
+
+                x, y = current_pose.kalman_filters[kpt_id]([current_pose.keypoints[kpt_id, 0], current_pose.keypoints[kpt_id, 1]])
+                current_pose.keypoints[kpt_id, 0] = x
+                current_pose.keypoints[kpt_id, 1] = y
+
                 current_pose.keypoints[kpt_id, 0] = current_pose.filters[kpt_id][0](current_pose.keypoints[kpt_id, 0])
                 current_pose.keypoints[kpt_id, 1] = current_pose.filters[kpt_id][1](current_pose.keypoints[kpt_id, 1])
+
             current_pose.bbox = Pose.get_bbox(current_pose.keypoints)

@@ -112,7 +112,7 @@ def run_demo(net, image_provider, height_size, cpu, track, smooth):
     upsample_ratio = 4
     num_keypoints = Pose.num_kpts
     previous_poses = []
-    delay = 33
+    delay = 0
     for img in image_provider:
         orig_img = img.copy()
         heatmaps, pafs, scale, pad = infer_fast(net, img, height_size, stride, upsample_ratio, cpu)
